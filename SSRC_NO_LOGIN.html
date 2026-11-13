@@ -266,4 +266,70 @@ function renderForm(record={}){
 }
 function showForm(){state.editId=null;renderForm({});}
 function hideForm(){$("formPanel").classList.add("hidden");state.editId=null;}
-function editRecord(page,id){navigate(page);const record=state.records[page].find(r=>r._id===id);if(!record)return;state.editId=id;renderForm(record);
+function editRecord(page,id){navigate(page);const record=state.records[page].find(r=>r._id===id);if(!record)return;state.editId=id;renderForm(record);}
+window.editRecord=editRecord;
+
+function renderPartyLedger(){
+ const bookings=state.records.Bookings||[], payments=state.records["Party Payments"]||[];
+ const names=[...new Set([...bookings.map(b=>String(b["Party Name"]||"").trim()),...payments.map(p=>String(p["Party Name"]||"").trim())].filter(Boolean))].sort();
+ const rows=names.map(name=>{
+   const bs=bookings.filter(b=>String(b["Party Name"]||"").trim().toLowerCase()===name.toLowerCase());
+   const ps=payments.filter(p=>String(p["Party Name"]||"").trim().toLowerCase()===name.toLowerCase());
+   const freight=bs.reduce((v,b)=>v+num(b["Booking Freight (₹)"]),0);
+   const old=bs.reduce((v,b)=>v+num(b["Total Received (₹)"])+num(b["TDS (₹)"]),0);
+   const received=ps.reduce((v,p)=>v+num(p["Amount Received (₹)"]),0);
+   const due=bs.reduce((v,b)=>v+partyBalanceForBooking(b),0);
+   return `<tr><td><b>${esc(name)}</b></td><td>${money(freight)}</td><td>${money(old)}</td><td>${money(received)}</td><td style="font-weight:850;color:${due>0?'#b45309':'#15803d'}">${money(due)}</td></tr>`;
+ });
+ $("partyLedgerRows").innerHTML=rows.length?rows.join(""):'<tr><td colspan="5" class="empty">No entries.</td></tr>';
+}
+function renderBrokerLedger(){
+ const bookings=state.records.Bookings||[], payments=state.records["Broker Payments"]||[];
+ const names=[...new Set([...bookings.map(b=>String(b["Transport Broker"]||"").trim()),...payments.map(p=>String(p["Broker Name"]||"").trim())].filter(Boolean))].sort();
+ const rows=names.map(name=>{
+   const bs=bookings.filter(b=>String(b["Transport Broker"]||"").trim().toLowerCase()===name.toLowerCase());
+   const ps=payments.filter(p=>String(p["Broker Name"]||"").trim().toLowerCase()===name.toLowerCase());
+   const hire=bs.reduce((s,b)=>s+num(b["Vehicle Hire (₹)"]),0);
+   const old=bs.reduce((s,b)=>s+num(b["Owner/Broker Paid (₹)"]),0);
+   const paid=ps.reduce((s,p)=>s+num(p["Amount Paid (₹)"]),0);
+   return `<tr><td><b>${esc(name)}</b></td><td>${money(hire)}</td><td>${money(old)}</td><td>${money(paid)}</td><td style="font-weight:850;color:${hire-old-paid>0?'#b45309':'#15803d'}">${money(hire-old-paid)}</td></tr>`;
+ });
+ $("brokerLedgerRows").innerHTML=rows.length?rows.join(""):'<tr><td colspan="5" class="empty">No entries.</td></tr>';
+}
+
+function renderRecords(){
+ const page=state.page, fields=fieldsFor(page);
+ if(page==="Broker Payments") renderBrokerLedger();
+ if(page==="Party Payments") renderPartyLedger();
+ $("pageTitle").textContent=page;
+ $("tableTitle").textContent=page+" Records ("+(state.records[page]||[]).length+")";
+ const visible=page==="Bookings"?["Date","LR Number","Party Name","Vehicle No","From","To","Booking Freight (₹)","Party Balance (₹)","Owner/Broker Balance (₹)","POD Status","Payment Status"]:fields;
+ $("tableHead").innerHTML="<tr>"+visible.map(x=>`<th>${esc(x)}</th>`).join("")+"<th>Action</th></tr>";
+ const q=($("searchBox").value||"").toLowerCase();
+ const rows=(state.records[page]||[]).filter(r=>fields.some(f=>String(r[f]??"").toLowerCase().includes(q))).slice().reverse();
+ $("tableBody").innerHTML=rows.length?rows.map(r=>`<tr>${visible.map(f=>`<td>${f==="Owner/Broker Balance (₹)"?money(brokerBalanceForBooking(r)):f==="Party Balance (₹)"?money(partyBalanceForBooking(r)):f.includes("(₹)")?money(r[f]):f.includes("Status")?`<span class="status ${/Paid|Submitted|Couriered|Sent/i.test(String(r[f]||""))?"ok":""}">${esc(r[f]||"—")}</span>`:esc(r[f]||"—")}</td>`).join("")}<td><div class="actions"><button class="btn edit" onclick="editRecord('${page}','${r._id}')">✏️ Edit</button><button class="btn danger" onclick="deleteRecord('${page}','${r._id}')">Delete</button></div></td></tr>`).join(""):`<tr><td colspan="${visible.length+1}" class="empty">No records found.</td></tr>`;
+}
+window.deleteRecord=(page,id)=>{const r=state.records[page].find(x=>x._id===id);if(!r)return;if(confirm("Delete this record?")){state.records[page]=state.records[page].filter(x=>x._id!==id);saveData();renderRecords();if(page==="Broker Payments")renderBrokerLedger();if(page==="Party Payments")renderPartyLedger();toast("Record deleted");}};
+
+document.querySelectorAll(".nav").forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.page)));
+$("addBtn").addEventListener("click",showForm);
+$("cancelBtn").addEventListener("click",hideForm);
+$("searchBox").addEventListener("input",renderRecords);
+$("recordForm").addEventListener("submit",e=>{
+ e.preventDefault();const record={};for(const el of $("formFields").querySelectorAll("input,select,textarea"))record[el.name]=el.value;
+ if(state.page==="Bookings"){
+  record["Total Received (₹)"]=num(record["Freight Advance (₹)"])+num(record["Manual Payment (₹)"])+num(record["NEFT Amount (₹)"]);
+  record["Party Balance (₹)"]=num(record["Booking Freight (₹)"])-num(record["Total Received (₹)"])-num(record["TDS (₹)"]);
+  record["Owner/Broker Balance (₹)"]=num(record["Vehicle Hire (₹)"])-num(record["Owner/Broker Paid (₹)"]);
+  record["POD Status"]=record["POD Submitted Date"]?"Submitted":"Pending";
+  record["Payment Status"]=num(record["Party Balance (₹)"])<=0?"Paid":"Pending";
+ }
+ if(state.editId){const ix=state.records[state.page].findIndex(r=>r._id===state.editId);if(ix>=0)state.records[state.page][ix]={...state.records[state.page][ix],...record};toast("Record updated");}
+ else {record._id=uid();state.records[state.page].push(record);toast("Record saved");}
+ saveData();hideForm();renderRecords();if(state.page==="Broker Payments")renderBrokerLedger();if(state.page==="Party Payments")renderPartyLedger();
+});
+
+loadDataAsync();
+</script>
+</body>
+</html>
